@@ -1,56 +1,46 @@
 #!/bin/bash
+#
+# VM Health Check Script for CentOS 7
+# ▶ Checks CPU, memory, and root‑disk utilisation.
+# ▶ Anything > 60 % ⇒ “Not Healthy”.
+# ▶ Use  --explain  to always print the detailed metrics.
 
-# VM Health Check Script for CentOS 7 (Proxmox VM)
-# Analyzes CPU, Memory, and Disk utilization.
-# If any of the three resource usages > 60%, health is "Not Healthy", otherwise "Healthy".
-# Use '--explain' argument to see detailed reasons.
-
+THRESHOLD=60
 EXPLAIN=0
-if [[ "$1" == "--explain" ]]; then
-    EXPLAIN=1
-fi
+[[ "$1" == "--explain" ]] && EXPLAIN=1
 
-# Get CPU Utilization (average over 1 minute)
-CPU_IDLE=$(top -bn1 | grep "Cpu(s)" | awk -F'id,' -v prefix="$prefix" '{ split($1, vs, ","); v=vs[length(vs)]; sub("%", "", v); print v }')
-CPU_USAGE=$(echo "scale=2; 100 - $CPU_IDLE" | bc)
+# ---------- CPU ----------
+# Example ‘top’ line:  %Cpu(s):  7.0 us,  2.0 sy,  0.0 ni, 89.9 id,  0.9 wa,  0.0 hi,  0.2 si,  0.0 st
+CPU_IDLE=$(top -bn1 | awk -F',' '/%Cpu/{for(i=1;i<=NF;i++) if($i~" id") {gsub(/[^0-9.]/,"",$i); print $i}}')
+CPU_USAGE=$(echo "scale=1; 100 - $CPU_IDLE" | bc)
 
-# Get Memory Utilization
-MEM_TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
-MEM_USED=$(free -m | awk '/^Mem:/ {print $3}')
-MEM_USAGE=$(echo "scale=2; $MEM_USED*100/$MEM_TOTAL" | bc)
+# ---------- Memory ----------
+read MEM_TOTAL MEM_USED < <(free -m | awk '/^Mem:/ {print $2,$3}')
+MEM_USAGE=$(echo "scale=1; $MEM_USED*100/$MEM_TOTAL" | bc)
 
-# Get Disk Utilization (Root / partition)
-DISK_USAGE=$(df -P / | awk 'END{print $(NF-1)}' | sed 's/%//')
+# ---------- Disk ( / ) ----------
+DISK_USAGE=$(df -P / | awk 'END{gsub(/%/,"",$5);print $5}')
 
-HEALTHY=1
+# ---------- Health logic ----------
 REASONS=()
 
-if (( $(echo "$CPU_USAGE > 60" | bc -l) )); then
-    HEALTHY=0
-    REASONS+=("CPU usage is ${CPU_USAGE}% (> 60%)")
-fi
+(( $(echo "$CPU_USAGE > $THRESHOLD" | bc -l) )) && \
+  REASONS+=("CPU usage ${CPU_USAGE}% (> ${THRESHOLD}%)")
 
-if (( $(echo "$MEM_USAGE > 60" | bc -l) )); then
-    HEALTHY=0
-    REASONS+=("Memory usage is ${MEM_USAGE}% (> 60%)")
-fi
+(( $(echo "$MEM_USAGE > $THRESHOLD" | bc -l) )) && \
+  REASONS+=("Memory usage ${MEM_USAGE}% (> ${THRESHOLD}%)")
 
-if (( $(echo "$DISK_USAGE > 60" | bc -l) )); then
-    HEALTHY=0
-    REASONS+=("Disk usage is ${DISK_USAGE}% (> 60%)")
-fi
+(( DISK_USAGE > THRESHOLD )) && \
+  REASONS+=("Disk usage ${DISK_USAGE}% (> ${THRESHOLD}%)")
 
-if [[ $HEALTHY -eq 1 ]]; then
-    STATUS="Healthy"
-    [[ $EXPLAIN -eq 1 ]] && echo "The VM is healthy. All resource usages are below or equal to 60%."
+if [[ ${#REASONS[@]} -eq 0 ]]; then
+    echo "VM Health Status: Healthy"
+    [[ $EXPLAIN -eq 1 ]] && printf "All resource usages ≤ %s%%\n" "$THRESHOLD"
 else
-    STATUS="Not Healthy"
-    if [[ $EXPLAIN -eq 1 ]]; then
-        echo "The VM is NOT healthy due to the following reasons:"
-        for reason in "${REASONS[@]}"; do
-            echo "- $reason"
-        done
-    fi
+    echo "VM Health Status: Not Healthy"
+    # Always show real values when unhealthy
+    printf "Reasons:\n"
+    for r in "${REASONS[@]}"; do
+        printf "  • %s\n" "$r"
+    done
 fi
-
-echo "VM Health Status: $STATUS"
